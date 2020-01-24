@@ -1,20 +1,17 @@
-require 'fluent/plugin/output'
+require 'fluent/output'
 require 'fluent/config/error'
 require 'net/http'
 require 'date'
 require 'yajl'
 
 module Fluent
-  module Plugin
-    class ClickhousejsonOutput < Fluent::Plugin::Output
+    class ClickhouseOutputJSON < BufferedOutput
         Fluent::Plugin.register_output("clickhousejson", self)
-
-        helpers :compat_parameters
 
         DEFAULT_TIMEKEY = 60 * 60 * 24
 
         desc "IP or fqdn of ClickHouse node"
-        config_param :host, :string
+        config_param :host, :string, default: "localhost"
         desc "Port of ClickHouse HTTP interface"
         config_param :port, :integer, default: 8123
         desc "Database to use"
@@ -31,6 +28,7 @@ module Fluent
         config_param :datetime_name, :string, default: nil
         config_section :buffer do
             config_set_default :@type, "file"
+            config_set_default :path, "/var/log/td-agent/buffer/clickhousejson"
             config_set_default :chunk_keys, ["time"]
             config_set_default :flush_at_shutdown, true
             config_set_default :timekey, DEFAULT_TIMEKEY
@@ -46,13 +44,17 @@ module Fluent
             test_connection(conf)
         end
 
+        def multi_workers_ready?
+            true
+        end
+
         def test_connection(conf)
             uri = @uri.clone
             uri.query = URI.encode_www_form(@uri_params.merge({"query" => "SHOW TABLES"}))
             begin
-        	res = Net::HTTP.get_response(uri)
+                res = Net::HTTP.get_response(uri)
             rescue Errno::ECONNREFUSED
-        	    raise Fluent::ConfigError, "Couldn't connect to ClickHouse at #{ @uri } - connection refused"
+                raise Fluent::ConfigError, "Couldn't connect to ClickHouse at #{ @uri } - connection refused"
             end
             if res.code != "200"
                 raise Fluent::ConfigError, "ClickHouse server responded non-200 code: #{ res.body }"
@@ -60,7 +62,7 @@ module Fluent
         end
 
         def make_uri(conf)
-            uri = URI("http://#{ conf["host"] }:#{ conf["port"] || 8123 }/")
+            uri = URI("http://#{ conf["host"] || 'localhost' }:#{ conf["port"] || 8123 }/")
             params = {
                 "database" => conf["database"] || "default",
                 "user"     => conf["user"] || "default",
@@ -76,7 +78,7 @@ module Fluent
             end
 
             return Yajl.dump(record) + "\n"
-	    end
+        end
 
         def write(chunk)
             uri = @uri.clone
@@ -86,11 +88,9 @@ module Fluent
             req.body = chunk.read
             http = Net::HTTP.new(uri.hostname, uri.port)
             resp = http.request(req)
-
             if resp.code != "200"
-        	    raise "Clickhouse responded: #{resp.body}"
+        	    log.warn "Clickhouse responded: #{resp.body}"
             end
         end
     end
-  end
 end
